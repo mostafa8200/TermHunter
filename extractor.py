@@ -103,11 +103,11 @@ def _rare_words(text):
     return out[:MAX_PER_ENTRY]
 
 
-def extract_terms(title, summary=""):
+def extract_terms(title, summary="", use_rare=True):
     """Return a de-duplicated list of (term, reason) found in an article."""
     text = clean_text(f"{title}. {summary}")[:2500]
     results, seen = [], set()
-    for term, why in _from_cues(text) + _rare_words(text):
+    for term, why in _from_cues(text) + (_rare_words(text) if use_rare else []):
         k = term.lower()
         if k not in seen:
             seen.add(k)

@@ -17,9 +17,11 @@ import time
 import feedparser
 import requests
 
-from domains import check_availability, suggest_domains, unchecked
+from domains import (check_availability, score_term, selected_extensions,
+                     suggest_domains, unchecked)
 from extractor import clean_text, extract_terms
-from sources import FEEDS
+from sectors import classify
+from sources import build_feeds
 
 log = logging.getLogger("termhunter")
 
@@ -122,13 +124,23 @@ class Monitor:
         if not self._cycle_lock.acquire(blocking=False):
             return                      # a check is already in progress
         try:
+            selected = list(self.db.get_setting("sectors"))
+            if not selected:
+                self._emit("status", "Pick at least one sector in the sidebar")
+                self._emit("done", 0)
+                return
             self._emit("status", "Checking sources...")
             check_free = bool(self.db.get_setting("check_availability"))
-            feeds = list(FEEDS)
+            exts = selected_extensions(self.db)
+            styles = list(self.db.get_setting("styles"))
+            style_n = int(self.db.get_setting("style_ext_count"))
+            use_rare = bool(self.db.get_setting("rare_words"))
+
+            feeds = build_feeds(selected)
             random.shuffle(feeds)
             new_total, seen_this_run = 0, set()
 
-            for i, (name, url) in enumerate(feeds, 1):
+            for i, (name, url, default_sector) in enumerate(feeds, 1):
                 if self._stop.is_set():
                     break
                 self._emit("status", f"Checking {name} ({i}/{len(feeds)})...")
@@ -143,16 +155,22 @@ class Monitor:
                     summary = entry.get("summary", "") if name != "Google News" else ""
                     source = f"{name} - {publisher}" if (name == "Google News" and publisher) else name
 
-                    for term, _why in extract_terms(title, summary):
+                    sector = classify(f"{title} {clean_text(summary)}") or default_sector
+                    if sector not in selected:
+                        continue        # belongs to a sector the user switched off
+
+                    for term, _why in extract_terms(title, summary, use_rare=use_rare):
                         key = self.db.make_key(term)
                         if key in seen_this_run or self.db.exists(term):
                             continue
                         seen_this_run.add(key)
-                        names = suggest_domains(term)
+                        names = suggest_domains(term, exts, styles, style_n)
                         if not names:
                             continue
                         domains = check_availability(names) if check_free else unchecked(names)
-                        row = self.db.add_term(term, domains, source, entry.get("link", ""))
+                        score = score_term(term, sector, domains)
+                        row = self.db.add_term(term, domains, source, entry.get("link", ""),
+                                               sector, score)
                         if row:
                             new_total += 1
                             self._emit("new", row)
